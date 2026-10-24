@@ -101,9 +101,18 @@ work tree before changing them, and write the series back with
 `git format-patch` from the pinned commit. Keep each patch to one change
 and its commit message in the patch.
 
+## Releases
+
+Pushing a tag `v<version>`, with the version in `patches/<base>/version`,
+runs CI as for any change and then publishes both archives, the source
+archive and `SHA256SUMS` as a GitHub release of that tag. They are
+pre-releases while this repository is private. CI signs nothing: the
+Catboat Agent installs an engine only when a signed manifest lists its
+SHA-256, and that manifest is signed offline from `SHA256SUMS`.
+
 ## Distributing
 
 Whoever receives a Chantey binary may also receive its corresponding
-source under the GPL: the source archive of the same version, which holds
-it complete, or this repository at the commit that built it, which pins
-every upstream source by commit.
+source under the GPL: the source archive of the same version, which each
+release carries and which holds it complete, or this repository at the
+commit that built it, which pins every upstream source by commit.

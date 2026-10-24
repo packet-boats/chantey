@@ -3,12 +3,15 @@
 #
 # Applies the patches, runs the tests of every patched package, builds
 # chantey for linux/amd64 and linux/arm64 with the source archive, and
-# checks that the source archive builds the same archives again.
+# checks that the source archive builds the same archives again. A v* tag
+# also publishes the archives, the source archive and SHA256SUMS as a
+# GitHub release of that tag.
 name: ci
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -43,3 +46,33 @@ jobs:
           name: chantey
           path: dist/
           retention-days: 7
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: chantey
+          path: dist
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=${TAG#v}
+          base=${version%-chantey.*}
+          [ -f "dist/chantey-$version-src.tar.gz" ] || { echo "$TAG does not match the version in patches/" >&2; exit 1; }
+          {
+            printf 'Chantey %s: sing-box %s with the patches in `patches/%s`.\n\n' "$version" "$base" "$base"
+            printf -- '- `chantey-%s-linux-amd64.tar.gz`, `chantey-%s-linux-arm64.tar.gz`: the static binary with `LICENSE` and `NOTICE`.\n' "$version" "$version"
+            printf -- '- `chantey-%s-src.tar.gz`: the complete source these are built from. Unpacked, `./build.sh -l` builds the same archives.\n' "$version"
+            printf -- '- `SHA256SUMS`: the SHA-256 of each.\n'
+          } >"$RUNNER_TEMP/notes.md"
+          # Pre-releases while the repository is private.
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
+            --title "Chantey $version" --notes-file "$RUNNER_TEMP/notes.md"
