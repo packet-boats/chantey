@@ -40,6 +40,7 @@ and counters, so the Agent adds its users again after every start.
 ```sh
 ./build.sh            # chantey for linux/amd64 and linux/arm64, into dist/
 ./build.sh -t         # the same, after the tests of every patched package
+./build.sh -s         # the same, with the source archive
 ./build.sh -a amd64   # one architecture
 ```
 
@@ -48,13 +49,28 @@ proxy. Go fetches and runs the release named in
 `patches/<base>/toolchain`, the newest patch release of the Go version
 upstream built sing-box with. For each
 repository in `patches/<base>/bases.txt` the script clones the upstream
-repository at the pinned commit and applies that repository's patches;
-sing-box then builds against the patched modules with CGO off, so the
-binary is static and runs on glibc and musl systems alike. Each
+repository at the pinned commit and applies that repository's patches.
+sing-box's other modules are vendored, keeping only the packages the
+linux/amd64 and linux/arm64 builds use, and sing-box then builds from the
+patched modules and `vendor/` with CGO off, so the binary is static and
+runs on glibc and musl systems alike. Each
 architecture gets `dist/chantey-<version>-linux-<arch>.tar.gz` with
 `chantey`, `LICENSE` and `NOTICE`, and `dist/SHA256SUMS` lists them. The
 build leaves out timestamps and paths, so the same inputs give the same
 archives.
+
+`-s` also writes `dist/chantey-<version>-src.tar.gz`, the complete source
+the binaries are built from: this script, the patches, and the patched
+sources with `vendor/`. Unpacked, it builds the same archives again with
+no access to GitHub or the module proxy:
+
+```sh
+tar -xzf chantey-<version>-src.tar.gz && cd chantey-<version>-src
+./build.sh -l         # builds from the sources in work/<base>/
+```
+
+Go still fetches the release named in `patches/<base>/toolchain` unless
+it is that release already.
 
 ## Layout
 
@@ -64,7 +80,7 @@ archives.
 | `patches/<base>/version` | the Chantey version built from this base, `<base>-chantey.<n>` |
 | `patches/<base>/toolchain` | the Go release the build runs |
 | `patches/<base>/<repository>/` | the patch series for that repository, in `git format-patch` form |
-| `build.sh` | clone, patch, test and build |
+| `build.sh` | clone, patch, test, vendor, build, and pack the source |
 
 A new upstream release gets a directory of its own, with the series
 rebased onto it; `build.sh` builds the newest one unless `-b` names
@@ -87,5 +103,6 @@ and its commit message in the patch.
 ## Distributing
 
 Whoever receives a Chantey binary may also receive its corresponding
-source under the GPL: this repository at the commit that built it, which
-pins every upstream source by commit.
+source under the GPL: the source archive of the same version, which holds
+it complete, or this repository at the commit that built it, which pins
+every upstream source by commit.
