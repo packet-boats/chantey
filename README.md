@@ -1,7 +1,7 @@
 # Chantey
 
-The engine that Catboat Hosts run. Chantey is sing-box with a small patch
-series: through the SSM API, users are added, changed and removed on a
+The engine that Catboat Hosts run. Chantey is built from sing-box's
+source with a small patch series: through the SSM API, users are added, changed and removed on a
 running inbound of every type a Host serves, with no restart, and removed
 users are shut out at once. The Catboat Agent installs it from a signed
 manifest and drives it as it drives the official sing-box.
@@ -9,7 +9,8 @@ manifest and drives it as it drives the official sing-box.
 Licensed under GPL-3.0-or-later; see `LICENSE` and `NOTICE`. Chantey is
 not sing-box and is not associated with its authors. Contributions need a
 DCO sign-off; see the `packet-boats/.github` repository for the
-contribution guide.
+contribution guide and the security policy. Please report security
+problems privately, not in an issue.
 
 ## What the patches change
 
@@ -106,7 +107,7 @@ and its commit message in the patch.
 Pushing a tag `v<version>`, with the version in `patches/<base>/version`,
 runs CI as for any change and then publishes both archives, the source
 archive and `SHA256SUMS` as a GitHub release of that tag. They are
-pre-releases while this repository is private. CI signs nothing: the
+marked as pre-releases until Catboat 1.0. CI signs nothing: the
 Catboat Agent installs an engine only when a signed manifest lists its
 SHA-256, and that manifest is signed offline from `SHA256SUMS`.
 

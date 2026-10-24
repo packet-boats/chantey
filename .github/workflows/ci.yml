@@ -73,6 +73,6 @@ jobs:
             printf -- '- `chantey-%s-src.tar.gz`: the complete source these are built from. Unpacked, `./build.sh -l` builds the same archives.\n' "$version"
             printf -- '- `SHA256SUMS`: the SHA-256 of each.\n'
           } >"$RUNNER_TEMP/notes.md"
-          # Pre-releases while the repository is private.
+          # Pre-releases until Catboat 1.0.
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
             --title "Chantey $version" --notes-file "$RUNNER_TEMP/notes.md"
