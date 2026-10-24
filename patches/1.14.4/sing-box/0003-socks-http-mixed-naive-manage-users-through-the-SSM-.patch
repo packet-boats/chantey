@@ -1,0 +1,396 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "packet-boats[bot]"
+ <346322443+packet-boats[bot]@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 15:35:14 +0000
+Subject: [PATCH] socks, http, mixed, naive: manage users through the SSM API
+
+The same for SOCKS, HTTP, mixed and Naive, which authenticate with a
+username and password: the SSM user name is the username. Upstream these
+let anyone in when they have no users; bound to the SSM API, an inbound
+with no users refuses every client.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+Signed-off-by: packet-boats[bot] <346322443+packet-boats[bot]@users.noreply.github.com>
+---
+ adapter/inbound/password_users.go | 55 +++++++++++++++++++++++++++++++
+ protocol/http/inbound.go          | 30 ++++++++++++++---
+ protocol/mixed/inbound.go         | 32 +++++++++++++++---
+ protocol/naive/inbound.go         | 29 ++++++++++++----
+ protocol/socks/inbound.go         | 30 ++++++++++++++---
+ 5 files changed, 156 insertions(+), 20 deletions(-)
+ create mode 100644 adapter/inbound/password_users.go
+
+diff --git a/adapter/inbound/password_users.go b/adapter/inbound/password_users.go
+new file mode 100644
+index 00000000..00a96a7b
+--- /dev/null
++++ b/adapter/inbound/password_users.go
+@@ -0,0 +1,55 @@
++package inbound
++
++import (
++	"strings"
++	"sync/atomic"
++
++	"github.com/sagernet/sing/common/auth"
++	E "github.com/sagernet/sing/common/exceptions"
++)
++
++// PasswordUsers holds the username and password users of an inbound (SOCKS,
++// HTTP, mixed, naive) so the SSM API can replace them at run time. The SSM
++// user name is the username clients authenticate with.
++type PasswordUsers struct {
++	authenticator atomic.Pointer[auth.Authenticator]
++}
++
++func NewPasswordUsers(users []auth.User) *PasswordUsers {
++	u := &PasswordUsers{}
++	u.authenticator.Store(auth.NewAuthenticator(users))
++	return u
++}
++
++// Load returns the current users. A nil result means authentication is off,
++// which only happens for a static config with no users.
++func (u *PasswordUsers) Load() *auth.Authenticator {
++	return u.authenticator.Load()
++}
++
++// SetManaged turns authentication on for an inbound bound to the SSM API, so
++// an empty user list rejects every client instead of allowing all of them.
++// The SSM API binds inbounds before they start listening.
++func (u *PasswordUsers) SetManaged() {
++	u.authenticator.CompareAndSwap(nil, &auth.Authenticator{})
++}
++
++func (u *PasswordUsers) Update(users []string, passwords []string) error {
++	userList := make([]auth.User, 0, len(users))
++	for i, user := range users {
++		password := passwords[i]
++		if user == "" || password == "" {
++			return E.New("empty username or password for user ", user)
++		}
++		if strings.Contains(user, ":") || len(user) > 255 || len(password) > 255 {
++			return E.New("invalid username or password for user ", user)
++		}
++		userList = append(userList, auth.User{Username: user, Password: password})
++	}
++	authenticator := auth.NewAuthenticator(userList)
++	if authenticator == nil {
++		authenticator = &auth.Authenticator{}
++	}
++	u.authenticator.Store(authenticator)
++	return nil
++}
+diff --git a/protocol/http/inbound.go b/protocol/http/inbound.go
+index 6e0c3ebd..9e56f049 100644
+--- a/protocol/http/inbound.go
++++ b/protocol/http/inbound.go
+@@ -24,14 +24,18 @@ func RegisterInbound(registry *inbound.Registry) {
+ 	inbound.Register[option.HTTPMixedInboundOptions](registry, C.TypeHTTP, NewInbound)
+ }
+ 
+-var _ adapter.TCPInjectableInbound = (*Inbound)(nil)
++var (
++	_ adapter.TCPInjectableInbound = (*Inbound)(nil)
++	_ adapter.ManagedSSMServer     = (*Inbound)(nil)
++)
+ 
+ type Inbound struct {
+ 	inbound.Adapter
+ 	router        adapter.ConnectionRouterEx
+ 	logger        log.ContextLogger
+ 	listener      *listener.Listener
+-	authenticator *auth.Authenticator
++	authenticator *inbound.PasswordUsers
++	tracker       adapter.SSMTracker
+ 	tlsConfig     tls.ServerConfig
+ }
+ 
+@@ -40,7 +44,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
+ 		Adapter:       inbound.NewAdapter(C.TypeHTTP, tag),
+ 		router:        uot.NewRouter(router, logger),
+ 		logger:        logger,
+-		authenticator: auth.NewAuthenticator(options.Users),
++		authenticator: inbound.NewPasswordUsers(options.Users),
+ 	}
+ 	if options.TLS != nil {
+ 		tlsConfig, err := tls.NewServerWithOptions(tls.ServerOptions{
+@@ -95,7 +99,7 @@ func (h *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata ada
+ 		}
+ 		conn = tlsConn
+ 	}
+-	err := http.HandleConnectionEx(ctx, conn, std_bufio.NewReader(conn), h.authenticator, adapter.NewUpstreamHandler(metadata, h.newUserConnection, h.streamUserPacketConnection), metadata.Source, onClose)
++	err := http.HandleConnectionEx(ctx, conn, std_bufio.NewReader(conn), h.authenticator.Load(), adapter.NewUpstreamHandler(metadata, h.newUserConnection, h.streamUserPacketConnection), metadata.Source, onClose)
+ 	if err != nil {
+ 		N.CloseOnHandshakeFailure(conn, onClose, err)
+ 		h.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", metadata.Source))
+@@ -113,6 +117,9 @@ func (h *Inbound) newUserConnection(ctx context.Context, conn net.Conn, metadata
+ 	}
+ 	metadata.User = user
+ 	h.logger.InfoContext(ctx, "[", user, "] inbound connection to ", metadata.Destination)
++	if h.tracker != nil {
++		conn = h.tracker.TrackConnection(conn, metadata)
++	}
+ 	h.router.RouteConnectionEx(ctx, conn, metadata, onClose)
+ }
+ 
+@@ -127,5 +134,20 @@ func (h *Inbound) streamUserPacketConnection(ctx context.Context, conn N.PacketC
+ 	}
+ 	metadata.User = user
+ 	h.logger.InfoContext(ctx, "[", user, "] inbound packet connection to ", metadata.Destination)
++	if h.tracker != nil {
++		conn = h.tracker.TrackPacketConnection(conn, metadata)
++	}
+ 	h.router.RoutePacketConnectionEx(ctx, conn, metadata, onClose)
+ }
++
++func (h *Inbound) SetTracker(tracker adapter.SSMTracker) {
++	h.tracker = tracker
++	h.authenticator.SetManaged()
++}
++
++// UpdateUsers replaces the users at run time, for the SSM API. The user name
++// is the username and each credential is the password. New connections use
++// the new list; established connections keep the user they authenticated as.
++func (h *Inbound) UpdateUsers(users []string, passwords []string) error {
++	return h.authenticator.Update(users, passwords)
++}
+diff --git a/protocol/mixed/inbound.go b/protocol/mixed/inbound.go
+index 22c25f30..7f331516 100644
+--- a/protocol/mixed/inbound.go
++++ b/protocol/mixed/inbound.go
+@@ -29,14 +29,18 @@ func RegisterInbound(registry *inbound.Registry) {
+ 	inbound.Register[option.HTTPMixedInboundOptions](registry, C.TypeMixed, NewInbound)
+ }
+ 
+-var _ adapter.TCPInjectableInbound = (*Inbound)(nil)
++var (
++	_ adapter.TCPInjectableInbound = (*Inbound)(nil)
++	_ adapter.ManagedSSMServer     = (*Inbound)(nil)
++)
+ 
+ type Inbound struct {
+ 	inbound.Adapter
+ 	router        adapter.ConnectionRouterEx
+ 	logger        log.ContextLogger
+ 	listener      *listener.Listener
+-	authenticator *auth.Authenticator
++	authenticator *inbound.PasswordUsers
++	tracker       adapter.SSMTracker
+ 	tlsConfig     tls.ServerConfig
+ 	udpTimeout    time.Duration
+ }
+@@ -52,7 +56,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
+ 		Adapter:       inbound.NewAdapter(C.TypeMixed, tag),
+ 		router:        uot.NewRouter(router, logger),
+ 		logger:        logger,
+-		authenticator: auth.NewAuthenticator(options.Users),
++		authenticator: inbound.NewPasswordUsers(options.Users),
+ 		udpTimeout:    udpTimeout,
+ 	}
+ 	if options.TLS != nil {
+@@ -125,9 +129,9 @@ func (h *Inbound) newConnection(ctx context.Context, conn net.Conn, metadata ada
+ 	}
+ 	switch headerBytes[0] {
+ 	case socks4.Version, socks5.Version:
+-		return socks.HandleConnectionEx(ctx, conn, reader, h.authenticator, adapter.NewUpstreamHandler(metadata, h.newUserConnection, h.streamUserPacketConnection), h.listener, h.udpTimeout, metadata.Source, onClose)
++		return socks.HandleConnectionEx(ctx, conn, reader, h.authenticator.Load(), adapter.NewUpstreamHandler(metadata, h.newUserConnection, h.streamUserPacketConnection), h.listener, h.udpTimeout, metadata.Source, onClose)
+ 	default:
+-		return http.HandleConnectionEx(ctx, conn, reader, h.authenticator, adapter.NewUpstreamHandler(metadata, h.newUserConnection, h.streamUserPacketConnection), metadata.Source, onClose)
++		return http.HandleConnectionEx(ctx, conn, reader, h.authenticator.Load(), adapter.NewUpstreamHandler(metadata, h.newUserConnection, h.streamUserPacketConnection), metadata.Source, onClose)
+ 	}
+ }
+ 
+@@ -142,6 +146,9 @@ func (h *Inbound) newUserConnection(ctx context.Context, conn net.Conn, metadata
+ 	}
+ 	metadata.User = user
+ 	h.logger.InfoContext(ctx, "[", user, "] inbound connection to ", metadata.Destination)
++	if h.tracker != nil {
++		conn = h.tracker.TrackConnection(conn, metadata)
++	}
+ 	h.router.RouteConnectionEx(ctx, conn, metadata, onClose)
+ }
+ 
+@@ -165,5 +172,20 @@ func (h *Inbound) streamUserPacketConnection(ctx context.Context, conn N.PacketC
+ 	} else {
+ 		h.logger.InfoContext(ctx, "[", user, "] inbound packet connection to ", metadata.Destination)
+ 	}
++	if h.tracker != nil {
++		conn = h.tracker.TrackPacketConnection(conn, metadata)
++	}
+ 	h.router.RoutePacketConnectionEx(ctx, conn, metadata, onClose)
+ }
++
++func (h *Inbound) SetTracker(tracker adapter.SSMTracker) {
++	h.tracker = tracker
++	h.authenticator.SetManaged()
++}
++
++// UpdateUsers replaces the users at run time, for the SSM API. The user name
++// is the username and each credential is the password. New connections use
++// the new list; established connections keep the user they authenticated as.
++func (h *Inbound) UpdateUsers(users []string, passwords []string) error {
++	return h.authenticator.Update(users, passwords)
++}
+diff --git a/protocol/naive/inbound.go b/protocol/naive/inbound.go
+index d19cc642..89b54b65 100644
+--- a/protocol/naive/inbound.go
++++ b/protocol/naive/inbound.go
+@@ -17,7 +17,6 @@ import (
+ 	"github.com/sagernet/sing-box/option"
+ 	"github.com/sagernet/sing-box/transport/v2rayhttp"
+ 	"github.com/sagernet/sing/common"
+-	"github.com/sagernet/sing/common/auth"
+ 	"github.com/sagernet/sing/common/buf"
+ 	"github.com/sagernet/sing/common/bufio"
+ 	E "github.com/sagernet/sing/common/exceptions"
+@@ -36,6 +35,8 @@ var (
+ 	WrapError                  func(error) error
+ )
+ 
++var _ adapter.ManagedSSMServer = (*Inbound)(nil)
++
+ func RegisterInbound(registry *inbound.Registry) {
+ 	inbound.Register[option.NaiveInboundOptions](registry, C.TypeNaive, NewInbound)
+ }
+@@ -49,7 +50,8 @@ type Inbound struct {
+ 	listener         *listener.Listener
+ 	network          []string
+ 	networkIsDefault bool
+-	authenticator    *auth.Authenticator
++	authenticator    *inbound.PasswordUsers
++	tracker          adapter.SSMTracker
+ 	tlsConfig        tls.ServerConfig
+ 	httpServer       *http.Server
+ }
+@@ -68,16 +70,13 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
+ 		}),
+ 		networkIsDefault: options.Network == "",
+ 		network:          options.Network.Build(),
+-		authenticator:    auth.NewAuthenticator(options.Users),
++		authenticator:    inbound.NewPasswordUsers(options.Users),
+ 	}
+ 	if common.Contains(inbound.network, N.NetworkUDP) {
+ 		if options.TLS == nil || !options.TLS.Enabled {
+ 			return nil, E.New("TLS is required for QUIC server")
+ 		}
+ 	}
+-	if len(options.Users) == 0 {
+-		return nil, E.New("missing users")
+-	}
+ 	if options.TLS != nil {
+ 		tlsConfig, err := tls.NewServer(ctx, logger, common.PtrValueOrDefault(options.TLS))
+ 		if err != nil {
+@@ -157,7 +156,8 @@ func (n *Inbound) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+ 	}
+ 	userName, password, authOk := sHttp.ParseBasicAuth(request.Header.Get("Proxy-Authorization"))
+ 	if authOk {
+-		authOk = n.authenticator.Verify(userName, password)
++		authenticator := n.authenticator.Load()
++		authOk = authenticator != nil && authenticator.Verify(userName, password)
+ 	}
+ 	if !authOk {
+ 		rejectHTTP(writer, http.StatusProxyAuthRequired)
+@@ -224,6 +224,9 @@ func (n *Inbound) newConnection(ctx context.Context, waitForClose bool, conn net
+ 	metadata.Destination = destination
+ 	metadata.OriginDestination = M.SocksaddrFromNet(conn.LocalAddr()).Unwrap()
+ 	metadata.User = userName
++	if n.tracker != nil && userName != "" {
++		conn = n.tracker.TrackConnection(conn, metadata)
++	}
+ 	if !waitForClose {
+ 		n.router.RouteConnectionEx(ctx, conn, metadata, nil)
+ 	} else {
+@@ -237,6 +240,18 @@ func (n *Inbound) newConnection(ctx context.Context, waitForClose bool, conn net
+ 	}
+ }
+ 
++func (n *Inbound) SetTracker(tracker adapter.SSMTracker) {
++	n.tracker = tracker
++	n.authenticator.SetManaged()
++}
++
++// UpdateUsers replaces the users at run time, for the SSM API. The user name
++// is the username and each credential is the password. Every CONNECT request
++// is authenticated, so removed users can open no new tunnels.
++func (n *Inbound) UpdateUsers(users []string, passwords []string) error {
++	return n.authenticator.Update(users, passwords)
++}
++
+ func (n *Inbound) badRequest(ctx context.Context, request *http.Request, err error) {
+ 	n.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", request.RemoteAddr))
+ }
+diff --git a/protocol/socks/inbound.go b/protocol/socks/inbound.go
+index b37fa9c9..f2b93eab 100644
+--- a/protocol/socks/inbound.go
++++ b/protocol/socks/inbound.go
+@@ -25,14 +25,18 @@ func RegisterInbound(registry *inbound.Registry) {
+ 	inbound.Register[option.SocksInboundOptions](registry, C.TypeSOCKS, NewInbound)
+ }
+ 
+-var _ adapter.TCPInjectableInbound = (*Inbound)(nil)
++var (
++	_ adapter.TCPInjectableInbound = (*Inbound)(nil)
++	_ adapter.ManagedSSMServer     = (*Inbound)(nil)
++)
+ 
+ type Inbound struct {
+ 	inbound.Adapter
+ 	router        adapter.ConnectionRouterEx
+ 	logger        logger.ContextLogger
+ 	listener      *listener.Listener
+-	authenticator *auth.Authenticator
++	authenticator *inbound.PasswordUsers
++	tracker       adapter.SSMTracker
+ 	udpTimeout    time.Duration
+ }
+ 
+@@ -47,7 +51,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
+ 		Adapter:       inbound.NewAdapter(C.TypeSOCKS, tag),
+ 		router:        uot.NewRouter(router, logger),
+ 		logger:        logger,
+-		authenticator: auth.NewAuthenticator(options.Users),
++		authenticator: inbound.NewPasswordUsers(options.Users),
+ 		udpTimeout:    udpTimeout,
+ 	}
+ 	inbound.listener = listener.New(listener.Options{
+@@ -73,7 +77,7 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+ }
+ 
+ func (h *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
+-	err := socks.HandleConnectionEx(ctx, conn, std_bufio.NewReader(conn), h.authenticator, adapter.NewUpstreamHandler(metadata, h.newUserConnection, h.streamUserPacketConnection), h.listener, h.udpTimeout, metadata.Source, onClose)
++	err := socks.HandleConnectionEx(ctx, conn, std_bufio.NewReader(conn), h.authenticator.Load(), adapter.NewUpstreamHandler(metadata, h.newUserConnection, h.streamUserPacketConnection), h.listener, h.udpTimeout, metadata.Source, onClose)
+ 	N.CloseOnHandshakeFailure(conn, onClose, err)
+ 	if err != nil {
+ 		if E.IsClosedOrCanceled(err) {
+@@ -95,6 +99,9 @@ func (h *Inbound) newUserConnection(ctx context.Context, conn net.Conn, metadata
+ 	}
+ 	metadata.User = user
+ 	h.logger.InfoContext(ctx, "[", user, "] inbound connection to ", metadata.Destination)
++	if h.tracker != nil {
++		conn = h.tracker.TrackConnection(conn, metadata)
++	}
+ 	h.router.RouteConnectionEx(ctx, conn, metadata, onClose)
+ }
+ 
+@@ -118,5 +125,20 @@ func (h *Inbound) streamUserPacketConnection(ctx context.Context, conn N.PacketC
+ 	} else {
+ 		h.logger.InfoContext(ctx, "[", user, "] inbound packet connection to ", metadata.Destination)
+ 	}
++	if h.tracker != nil {
++		conn = h.tracker.TrackPacketConnection(conn, metadata)
++	}
+ 	h.router.RoutePacketConnectionEx(ctx, conn, metadata, onClose)
+ }
++
++func (h *Inbound) SetTracker(tracker adapter.SSMTracker) {
++	h.tracker = tracker
++	h.authenticator.SetManaged()
++}
++
++// UpdateUsers replaces the users at run time, for the SSM API. The user name
++// is the username and each credential is the password. New connections use
++// the new list; established connections keep the user they authenticated as.
++func (h *Inbound) UpdateUsers(users []string, passwords []string) error {
++	return h.authenticator.Update(users, passwords)
++}
