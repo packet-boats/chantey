@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "packet-boats[bot]"
+ <346322443+packet-boats[bot]@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 13:54:41 +0000
+Subject: [PATCH] Say in chantey version which sing-box release it is built
+ from
+
+The version command prints a "Built from sing-box <version>" line after
+its own version when the build sets main.basedOn, and its help no longer
+calls the program sing-box.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+Signed-off-by: packet-boats[bot] <346322443+packet-boats[bot]@users.noreply.github.com>
+---
+ cmd/sing-box/cmd_version.go | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/cmd/sing-box/cmd_version.go b/cmd/sing-box/cmd_version.go
+index 9416bca9..811a8aa4 100644
+--- a/cmd/sing-box/cmd_version.go
++++ b/cmd/sing-box/cmd_version.go
+@@ -12,13 +12,17 @@ import (
+ 
+ var commandVersion = &cobra.Command{
+ 	Use:   "version",
+-	Short: "Print current version of sing-box",
++	Short: "Print current version",
+ 	Run:   printVersion,
+ 	Args:  cobra.NoArgs,
+ }
+ 
+ var nameOnly bool
+ 
++// basedOn is the sing-box release this program is built from; the build sets
++// it with -X main.basedOn=<version>.
++var basedOn string
++
+ func init() {
+ 	commandVersion.Flags().BoolVarP(&nameOnly, "name", "n", false, "print version name only")
+ 	mainCommand.AddCommand(commandVersion)
+@@ -29,7 +33,11 @@ func printVersion(cmd *cobra.Command, args []string) {
+ 		os.Stdout.WriteString(C.Version + "\n")
+ 		return
+ 	}
+-	version := "chantey version " + C.Version + "\n\n"
++	version := "chantey version " + C.Version + "\n"
++	if basedOn != "" {
++		version += "Built from sing-box " + basedOn + "\n"
++	}
++	version += "\n"
+ 	version += "Environment: " + runtime.Version() + " " + runtime.GOOS + "/" + runtime.GOARCH + "\n"
+ 
+ 	var tags string

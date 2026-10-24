@@ -16,7 +16,7 @@ problems privately, not in an issue.
 
 | Repository | Change |
 | --- | --- |
-| sing-box | VLESS, Hysteria2, TUIC, VMess, Trojan, Hysteria, AnyTLS, Snell, SOCKS, HTTP, mixed and Naive inbounds take user updates from the SSM API while they run. An inbound bound to the SSM API with no users refuses every client. The SSM API rolls back a change the inbound refuses, and refuses empty credentials. The program calls itself chantey. |
+| sing-box | VLESS, Hysteria2, TUIC, VMess, Trojan, Hysteria, AnyTLS, Snell, SOCKS, HTTP, mixed and Naive inbounds take user updates from the SSM API while they run. An inbound bound to the SSM API with no users refuses every client. The SSM API rolls back a change the inbound refuses, and refuses empty credentials. The program calls itself chantey, and `chantey version` names the sing-box release it is built from. |
 | sing-quic | Hysteria2, TUIC and Hysteria update users while they run and close a removed user's sessions. |
 | sing-vmess | VMess updates users while it runs. VLESS Vision guards its TLS filter state with a lock, which fixes a data race in the upstream module. |
 | sing-snell | Snell v5 and v6 update users while they run, also to an empty list. |

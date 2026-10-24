@@ -92,7 +92,7 @@ if [ -n "$TEST" ]; then
 fi
 
 TAGS=$(cat "$SB/release/DEFAULT_BUILD_TAGS_OTHERS")
-LDFLAGS="$(cat "$SB/release/LDFLAGS") -s -w -buildid= -X github.com/sagernet/sing-box/constant.Version=$VERSION"
+LDFLAGS="$(cat "$SB/release/LDFLAGS") -s -w -buildid= -X github.com/sagernet/sing-box/constant.Version=$VERSION -X main.basedOn=$BASE"
 
 if [ -z "$LOCAL" ]; then
 	# go mod vendor copies the packages of every platform and the files
