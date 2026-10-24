@@ -1,0 +1,9 @@
+# The upstream sources this series applies to: the directory the build
+# clones each into, its repository, the commit, and the Go module it
+# stands in for in sing-box's go.mod (- for sing-box itself). The commits
+# are sing-box v1.14.4 and the module versions its go.mod pins.
+sing-box     https://github.com/SagerNet/sing-box.git     c005f35300ce76427dc285481ec5695f5b179cd2  -
+sing-quic    https://github.com/SagerNet/sing-quic.git    7e0a5869a5f49ed0a685143345dfda0448bbc708  github.com/sagernet/sing-quic
+sing-vmess   https://github.com/SagerNet/sing-vmess.git   a0c58542bd9d99b00ea0c3cfacce6f03cf8a4017  github.com/sagernet/sing-vmess
+sing-snell   https://github.com/SagerNet/sing-snell.git   bc5a12ac736f235b2de2926ecd2791cc925e6b8c  github.com/sagernet/sing-snell
+sing-anytls  https://github.com/anytls/sing-anytls.git    130d2e61b8895727bfed4942c535e91b246a9603  github.com/anytls/sing-anytls
