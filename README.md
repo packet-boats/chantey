@@ -104,6 +104,15 @@ made with, and runs `./build.sh -t -a amd64` on it. It needs jq besides
 what `build.sh` needs. When a patch does not apply or a test fails, the
 series needs rebasing by hand (see below).
 
+The `upstream` workflow runs it once a day. For each new stable release it
+opens one issue, saying either that the patches apply and the tests pass,
+with the prepared set attached to the run, or what failed. It changes no
+branch and makes no release: a pull request adds the set, and a tag
+publishes the build. The job that runs sing-box's tests can only read the
+repository; a separate job opens the issue. GitHub turns a public
+repository's schedules off after 60 days without a commit, so after a quiet
+spell it may need turning back on in the Actions tab.
+
 ## Working on a patch
 
 ```sh

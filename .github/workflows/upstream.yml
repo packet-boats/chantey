@@ -1,0 +1,128 @@
+# Copyright 2026 Packet Boats
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Once a day: when sing-box has a stable release newer than the newest patch
+# set, upstream.sh prepares a set for it, applies it, runs the tests and
+# builds. An issue, one per release, says how that went: the patches apply
+# and the tests pass, with the prepared set attached to the run, or what
+# failed. A release without an official build yet is tried again the next
+# day. A person makes the pull request and the release.
+#
+# The tests run sing-box's code, so that job gets a token that can only read
+# the repository. Only the last job, which runs nothing from the checkout or
+# from sing-box, can open issues.
+name: upstream
+
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: sing-box version to try, such as 1.14.5 (default the newest stable release)
+        required: false
+
+permissions: {}
+
+jobs:
+  new:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      version: ${{ steps.new.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: new release
+        id: new
+        env:
+          INPUT: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(./upstream.sh -n ${INPUT:+"$INPUT"})
+          # One issue per release: none once one exists, open or closed.
+          if [ -n "$v" ] && gh issue list --state all --limit 500 --json title \
+            --jq '.[].title' | grep -qF "sing-box $v:"; then
+            echo "sing-box $v has an issue already"
+            v=
+          fi
+          echo "version=$v" >>"$GITHUB_OUTPUT"
+
+  try:
+    needs: new
+    if: needs.new.outputs.version != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.try.outputs.status }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: prepare, test and build
+        id: try
+        env:
+          V: ${{ needs.new.outputs.version }}
+        run: |
+          set +e
+          ./upstream.sh "$V" >upstream.log 2>&1
+          echo "status=$?" >>"$GITHUB_OUTPUT"
+          cat upstream.log
+      - uses: actions/upload-artifact@v4
+        if: steps.try.outputs.status == '0'
+        with:
+          name: patches-${{ needs.new.outputs.version }}
+          path: patches/${{ needs.new.outputs.version }}/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-log
+          path: upstream.log
+          if-no-files-found: ignore
+
+  issue:
+    needs: [new, try]
+    # Also when the try job failed or ran out of time, so that a release
+    # never fails silently day after day.
+    if: always() && needs.try.result != 'skipped' && needs.try.outputs.status != '4'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: upstream-log
+      - name: issue
+        env:
+          V: ${{ needs.new.outputs.version }}
+          STATUS: ${{ needs.try.outputs.status }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ "$STATUS" = 0 ]; then
+            title="sing-box $V: the patches apply and the tests pass"
+            next="The prepared patches/$V is attached to the run. Next: a pull request with it, the Catboat labs with this build, then the tag v$V-chantey.1."
+          else
+            title="sing-box $V: the patches need work"
+            next="Rebase the series onto $V (see Working on a patch in the README), then open a pull request."
+          fi
+          {
+            printf 'sing-box %s is out: https://github.com/SagerNet/sing-box/releases/tag/v%s\n\n' "$V" "$V"
+            printf '%s\n\nRun: %s\n\nThe end of the log:\n\n```\n' "$next" "$RUN"
+            tail -n 40 upstream.log 2>/dev/null || echo "(the check left no log; see the run)"
+            printf '```\n'
+          } >issue.md
+          gh issue create --title "$title" --body-file issue.md
