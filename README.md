@@ -70,7 +70,8 @@ tar -xzf chantey-<version>-src.tar.gz && cd chantey-<version>-src
 ```
 
 Go still fetches the release named in `patches/<base>/toolchain` unless
-it is that release already.
+it is that release already. CI checks on every change that the source
+archive rebuilds the same archives.
 
 ## Layout
 

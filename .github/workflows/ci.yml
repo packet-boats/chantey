@@ -1,8 +1,9 @@
 # Copyright 2026 Packet Boats
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Applies the patches, runs the tests of every patched package and builds
-# chantey for linux/amd64 and linux/arm64.
+# Applies the patches, runs the tests of every patched package, builds
+# chantey for linux/amd64 and linux/arm64 with the source archive, and
+# checks that the source archive builds the same archives again.
 name: ci
 
 on:
@@ -17,7 +18,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -25,11 +26,18 @@ jobs:
           go-version: stable
           cache: false
       - name: patch, test and build
-        run: ./build.sh -t
+        run: ./build.sh -t -s
       - name: run the amd64 binary
         run: |
           tar -xzf dist/chantey-*-linux-amd64.tar.gz -C "$RUNNER_TEMP"
           "$RUNNER_TEMP"/chantey-*-linux-amd64/chantey version
+      - name: rebuild from the source archive
+        run: |
+          rm -rf work
+          mkdir "$RUNNER_TEMP/src"
+          tar -xzf dist/chantey-*-src.tar.gz -C "$RUNNER_TEMP/src"
+          (cd "$RUNNER_TEMP"/src/chantey-*-src && ./build.sh -l -o "$RUNNER_TEMP/rebuilt")
+          grep -v -- '-src\.tar\.gz$' dist/SHA256SUMS | diff - "$RUNNER_TEMP/rebuilt/SHA256SUMS"
       - uses: actions/upload-artifact@v4
         with:
           name: chantey
