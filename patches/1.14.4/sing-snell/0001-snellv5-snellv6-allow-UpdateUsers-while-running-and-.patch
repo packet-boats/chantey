@@ -1,0 +1,120 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "packet-boats[bot]"
+ <346322443+packet-boats[bot]@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 15:35:15 +0000
+Subject: [PATCH] snellv5, snellv6: allow UpdateUsers while running, and with
+ no users
+
+UpdateUsers may now be called while the server runs, and with an empty
+list, which refuses every client. Each request is authenticated against
+the current users, including requests on reused connections.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+Signed-off-by: packet-boats[bot] <346322443+packet-boats[bot]@users.noreply.github.com>
+---
+ snellv5/server.go | 13 +++++++++----
+ snellv6/server.go | 13 +++++++++----
+ 2 files changed, 18 insertions(+), 8 deletions(-)
+
+diff --git a/snellv5/server.go b/snellv5/server.go
+index c275514..f07c0a7 100644
+--- a/snellv5/server.go
++++ b/snellv5/server.go
+@@ -171,7 +171,8 @@ func (s *Service) NewConnection(ctx context.Context, conn net.Conn, source M.Soc
+ 
+ type MultiService[U comparable] struct {
+ 	*Service
+-	users map[string]U
++	access sync.RWMutex
++	users  map[string]U
+ }
+ 
+ func NewMultiService[U comparable](options ServiceOptions) (*MultiService[U], error) {
+@@ -182,13 +183,13 @@ func NewMultiService[U comparable](options ServiceOptions) (*MultiService[U], er
+ 	return &MultiService[U]{Service: service, users: make(map[string]U)}, nil
+ }
+ 
++// UpdateUsers replaces the user list. It may be called while the service is
++// running, and with an empty list, which rejects every client. Each request
++// is authenticated, including requests on reused connections.
+ func (s *MultiService[U]) UpdateUsers(users []U, userKeys [][]byte) error {
+ 	if len(users) != len(userKeys) {
+ 		return E.New("snell: user/key count mismatch")
+ 	}
+-	if len(users) == 0 {
+-		return snell.ErrNoUsers
+-	}
+ 	userMap := make(map[string]U, len(users))
+ 	for index, user := range users {
+ 		key := userKeys[index]
+@@ -204,7 +205,9 @@ func (s *MultiService[U]) UpdateUsers(users []U, userKeys [][]byte) error {
+ 		}
+ 		userMap[keyString] = user
+ 	}
++	s.access.Lock()
+ 	s.users = userMap
++	s.access.Unlock()
+ 	return nil
+ }
+ 
+@@ -217,7 +220,9 @@ func (s *MultiService[U]) NewConnection(ctx context.Context, conn net.Conn, sour
+ }
+ 
+ func (s *MultiService[U]) authenticate(ctx context.Context, request snell.Request) (context.Context, error) {
++	s.access.RLock()
+ 	user, loaded := s.users[string(request.ClientID)]
++	s.access.RUnlock()
+ 	if !loaded {
+ 		return nil, snell.ErrBadUserKey
+ 	}
+diff --git a/snellv6/server.go b/snellv6/server.go
+index 8b3052d..a0db817 100644
+--- a/snellv6/server.go
++++ b/snellv6/server.go
+@@ -57,7 +57,8 @@ func (s *Service) NewConnection(ctx context.Context, conn net.Conn, source M.Soc
+ 
+ type MultiService[U comparable] struct {
+ 	*Service
+-	users map[string]U
++	access sync.RWMutex
++	users  map[string]U
+ }
+ 
+ var errInvalidUDPTunnelRequest = E.New("snell: invalid udp tunnel request")
+@@ -70,13 +71,13 @@ func NewMultiService[U comparable](options ServerOptions) (*MultiService[U], err
+ 	return &MultiService[U]{Service: service, users: make(map[string]U)}, nil
+ }
+ 
++// UpdateUsers replaces the user list. It may be called while the service is
++// running, and with an empty list, which rejects every client. Each request
++// is authenticated, including requests on reused connections.
+ func (s *MultiService[U]) UpdateUsers(users []U, userKeys [][]byte) error {
+ 	if len(users) != len(userKeys) {
+ 		return E.New("snell: user/key count mismatch")
+ 	}
+-	if len(users) == 0 {
+-		return snell.ErrNoUsers
+-	}
+ 	userMap := make(map[string]U, len(users))
+ 	for index, user := range users {
+ 		key := userKeys[index]
+@@ -92,7 +93,9 @@ func (s *MultiService[U]) UpdateUsers(users []U, userKeys [][]byte) error {
+ 		}
+ 		userMap[keyString] = user
+ 	}
++	s.access.Lock()
+ 	s.users = userMap
++	s.access.Unlock()
+ 	return nil
+ }
+ 
+@@ -105,7 +108,9 @@ func (s *MultiService[U]) NewConnection(ctx context.Context, conn net.Conn, sour
+ }
+ 
+ func (s *MultiService[U]) authenticate(ctx context.Context, request snell.Request) (context.Context, error) {
++	s.access.RLock()
+ 	user, loaded := s.users[string(request.ClientID)]
++	s.access.RUnlock()
+ 	if !loaded {
+ 		return nil, snell.ErrBadUserKey
+ 	}

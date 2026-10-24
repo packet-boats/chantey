@@ -1,0 +1,216 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "packet-boats[bot]"
+ <346322443+packet-boats[bot]@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 14:52:58 +0000
+Subject: [PATCH] hysteria2, tuic: update users live and close revoked sessions
+
+The services accept a new user list while they run. A removed user's
+open sessions are closed when the list changes, and their new
+connections are refused.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+Signed-off-by: packet-boats[bot] <346322443+packet-boats[bot]@users.noreply.github.com>
+---
+ hysteria2/service.go | 30 ++++++++++++++++++++++++
+ tuic/service.go      | 55 ++++++++++++++++++++++++++++++++++++--------
+ 2 files changed, 75 insertions(+), 10 deletions(-)
+
+diff --git a/hysteria2/service.go b/hysteria2/service.go
+index cf453d2..55a07a3 100644
+--- a/hysteria2/service.go
++++ b/hysteria2/service.go
+@@ -76,6 +76,9 @@ type Service[U comparable] struct {
+ 	quicListener          io.Closer
+ 	bbrProfile            congestion_meta2.Profile
+ 	realmServer           *realm.Server
++	userAccess            sync.RWMutex
++	sessionAccess         sync.Mutex
++	sessions              map[*serverSession[U]]struct{}
+ }
+ 
+ func NewService[U comparable](options ServiceOptions) (*Service[U], error) {
+@@ -145,15 +148,31 @@ func NewService[U comparable](options ServiceOptions) (*Service[U], error) {
+ 		masqueradeHandler:     options.MasqueradeHandler,
+ 		bbrProfile:            bbrProfile,
+ 		realmServer:           realmServer,
++		sessions:              make(map[*serverSession[U]]struct{}),
+ 	}, nil
+ }
+ 
++// UpdateUsers replaces the user list. It may be called while the service is
++// running: sessions whose password no longer maps to the same user are closed.
+ func (s *Service[U]) UpdateUsers(userList []U, passwordList []string) {
+ 	userMap := make(map[string]U)
+ 	for i, user := range userList {
+ 		userMap[passwordList[i]] = user
+ 	}
++	s.userAccess.Lock()
+ 	s.userMap = userMap
++	s.userAccess.Unlock()
++	s.sessionAccess.Lock()
++	var revoked []*serverSession[U]
++	for session := range s.sessions {
++		if user, loaded := userMap[session.authKey]; !loaded || user != session.authUser {
++			revoked = append(revoked, session)
++		}
++	}
++	s.sessionAccess.Unlock()
++	for _, session := range revoked {
++		_ = session.quicConn.CloseWithError(0, "")
++	}
+ }
+ 
+ func (s *Service[U]) Start(conn net.PacketConn) error {
+@@ -253,6 +272,9 @@ func (s *Service[U]) handleConnection(connection *quic.Conn) {
+ 	}
+ 	_ = httpServer.ServeQUICConn(connection)
+ 	_ = connection.CloseWithError(0, "")
++	s.sessionAccess.Lock()
++	delete(s.sessions, session)
++	s.sessionAccess.Unlock()
+ }
+ 
+ type serverSession[U comparable] struct {
+@@ -264,6 +286,7 @@ type serverSession[U comparable] struct {
+ 	connErr       error
+ 	authenticated bool
+ 	authUser      U
++	authKey       string
+ 	udpAccess     sync.RWMutex
+ 	udpConnMap    map[uint32]*udpPacketConn
+ }
+@@ -280,13 +303,20 @@ func (s *serverSession[U]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 			return
+ 		}
+ 		request := protocol.AuthRequestFromHeader(r.Header)
++		s.userAccess.RLock()
+ 		user, loaded := s.userMap[request.Auth]
+ 		if !loaded {
++			s.userAccess.RUnlock()
+ 			s.masqueradeHandler.ServeHTTP(w, r)
+ 			return
+ 		}
+ 		s.authUser = user
++		s.authKey = request.Auth
+ 		s.authenticated = true
++		s.sessionAccess.Lock()
++		s.sessions[s] = struct{}{}
++		s.sessionAccess.Unlock()
++		s.userAccess.RUnlock()
+ 		var rxAuto bool
+ 		if s.receiveBPS > 0 && s.ignoreClientBandwidth && request.Rx == 0 {
+ 			s.logger.Debug("process connection from ", r.RemoteAddr, ": BBR disabled by server")
+diff --git a/tuic/service.go b/tuic/service.go
+index d4535e7..9cc1805 100644
+--- a/tuic/service.go
++++ b/tuic/service.go
+@@ -58,6 +58,10 @@ type Service[U comparable] struct {
+ 	handler           ServiceHandler
+ 
+ 	quicListener io.Closer
++
++	userAccess    sync.RWMutex
++	sessionAccess sync.Mutex
++	sessions      map[*serverSession[U]]struct{}
+ }
+ 
+ func NewService[U comparable](options ServiceOptions) (*Service[U], error) {
+@@ -94,6 +98,7 @@ func NewService[U comparable](options ServiceOptions) (*Service[U], error) {
+ 		authTimeout:       options.AuthTimeout,
+ 		udpTimeout:        options.UDPTimeout,
+ 		handler:           options.Handler,
++		sessions:          make(map[*serverSession[U]]struct{}),
+ 	}, nil
+ }
+ 
+@@ -104,8 +109,22 @@ func (s *Service[U]) UpdateUsers(userList []U, uuidList [][16]byte, passwordList
+ 		userMap[uuidList[index]] = userList[index]
+ 		passwordMap[userList[index]] = passwordList[index]
+ 	}
++	s.userAccess.Lock()
+ 	s.userMap = userMap
+ 	s.passwordMap = passwordMap
++	s.userAccess.Unlock()
++	// Close sessions whose UUID and password no longer authenticate the same user.
++	s.sessionAccess.Lock()
++	var revoked []*serverSession[U]
++	for session := range s.sessions {
++		if user, loaded := userMap[session.authUUID]; !loaded || user != session.authUser || passwordMap[user] != session.authPassword {
++			revoked = append(revoked, session)
++		}
++	}
++	s.sessionAccess.Unlock()
++	for _, session := range revoked {
++		session.closeWithError(E.New("user removed"))
++	}
+ }
+ 
+ func (s *Service[U]) Start(conn net.PacketConn) error {
+@@ -170,20 +189,28 @@ func (s *Service[U]) handleConnection(connection *quic.Conn) {
+ 		udpConnMap: make(map[uint16]*udpPacketConn),
+ 	}
+ 	session.handle()
++	go func() {
++		<-connection.Context().Done()
++		s.sessionAccess.Lock()
++		delete(s.sessions, session)
++		s.sessionAccess.Unlock()
++	}()
+ }
+ 
+ type serverSession[U comparable] struct {
+ 	*Service[U]
+-	ctx        context.Context
+-	quicConn   *quic.Conn
+-	connAccess sync.Mutex
+-	connDone   chan struct{}
+-	connErr    error
+-	authAccess sync.Mutex
+-	authDone   chan struct{}
+-	authUser   U
+-	udpAccess  sync.RWMutex
+-	udpConnMap map[uint16]*udpPacketConn
++	ctx          context.Context
++	quicConn     *quic.Conn
++	connAccess   sync.Mutex
++	connDone     chan struct{}
++	connErr      error
++	authAccess   sync.Mutex
++	authDone     chan struct{}
++	authUser     U
++	authUUID     [16]byte
++	authPassword string
++	udpAccess    sync.RWMutex
++	udpConnMap   map[uint16]*udpPacketConn
+ }
+ 
+ func (s *serverSession[U]) handle() {
+@@ -241,12 +268,15 @@ func (s *serverSession[U]) handleUniStream(stream *quic.ReceiveStream) error {
+ 		}
+ 		var userUUID [16]byte
+ 		copy(userUUID[:], buffer.Range(2, 2+16))
++		s.userAccess.RLock()
++		defer s.userAccess.RUnlock()
+ 		user, loaded := s.userMap[userUUID]
+ 		if !loaded {
+ 			return E.New("authentication: unknown user ", uuid.UUID(userUUID))
+ 		}
+ 		handshakeState := s.quicConn.ConnectionState()
+ 		tuicToken, err := handshakeState.TLS.ExportKeyingMaterial(string(userUUID[:]), []byte(s.passwordMap[user]), 32)
++		password := s.passwordMap[user]
+ 		if err != nil {
+ 			return E.Cause(err, "authentication: export keying material")
+ 		}
+@@ -261,7 +291,12 @@ func (s *serverSession[U]) handleUniStream(stream *quic.ReceiveStream) error {
+ 		default:
+ 		}
+ 		s.authUser = user
++		s.authUUID = userUUID
++		s.authPassword = password
+ 		close(s.authDone)
++		s.sessionAccess.Lock()
++		s.sessions[s] = struct{}{}
++		s.sessionAccess.Unlock()
+ 		return nil
+ 	case CommandPacket:
+ 		select {

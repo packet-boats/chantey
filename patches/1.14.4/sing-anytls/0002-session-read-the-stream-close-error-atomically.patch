@@ -1,0 +1,103 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "packet-boats[bot]"
+ <346322443+packet-boats[bot]@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 15:35:15 +0000
+Subject: [PATCH] session: read the stream close error atomically
+
+A stream read its close error without synchronisation, which the race
+detector reports when a session closes while a stream reads. It is now
+an atomic value.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+Signed-off-by: packet-boats[bot] <346322443+packet-boats[bot]@users.noreply.github.com>
+---
+ session/stream.go | 29 +++++++++++++++++++++--------
+ 1 file changed, 21 insertions(+), 8 deletions(-)
+
+diff --git a/session/stream.go b/session/stream.go
+index a962374..7f82e22 100644
+--- a/session/stream.go
++++ b/session/stream.go
+@@ -5,6 +5,7 @@ import (
+ 	"net"
+ 	"os"
+ 	"sync"
++	"sync/atomic"
+ 	"time"
+ 
+ 	"github.com/anytls/sing-anytls/pipe"
+@@ -22,7 +23,7 @@ type Stream struct {
+ 
+ 	dieOnce sync.Once
+ 	dieHook func()
+-	dieErr  error
++	dieErr  atomic.Pointer[error]
+ 
+ 	reportOnce sync.Once
+ }
+@@ -40,8 +41,10 @@ func newStream(id uint32, sess *Session) *Stream {
+ // Read implements net.Conn
+ func (s *Stream) Read(b []byte) (n int, err error) {
+ 	n, err = s.pipeR.Read(b)
+-	if n == 0 && s.dieErr != nil {
+-		err = s.dieErr
++	if n == 0 {
++		if dieErr := s.loadDieErr(); dieErr != nil {
++			err = dieErr
++		}
+ 	}
+ 	return
+ }
+@@ -53,13 +56,22 @@ func (s *Stream) Write(b []byte) (n int, err error) {
+ 		return 0, os.ErrDeadlineExceeded
+ 	default:
+ 	}
+-	if s.dieErr != nil {
+-		return 0, s.dieErr
++	if dieErr := s.loadDieErr(); dieErr != nil {
++		return 0, dieErr
+ 	}
+ 	n, err = s.sess.writeDataFrame(s.id, b)
+ 	return
+ }
+ 
++// loadDieErr returns why the stream closed. Session.Close closes streams from
++// another goroutine while they are in use, so the error is read atomically.
++func (s *Stream) loadDieErr() error {
++	if dieErr := s.dieErr.Load(); dieErr != nil {
++		return *dieErr
++	}
++	return nil
++}
++
+ // Close implements net.Conn
+ func (s *Stream) Close() error {
+ 	return s.closeWithError(io.ErrClosedPipe)
+@@ -69,7 +81,8 @@ func (s *Stream) Close() error {
+ func (s *Stream) closeLocally() {
+ 	var once bool
+ 	s.dieOnce.Do(func() {
+-		s.dieErr = net.ErrClosed
++		dieErr := net.ErrClosed
++		s.dieErr.Store(&dieErr)
+ 		s.pipeR.Close()
+ 		once = true
+ 	})
+@@ -84,7 +97,7 @@ func (s *Stream) closeLocally() {
+ func (s *Stream) closeWithError(err error) error {
+ 	var once bool
+ 	s.dieOnce.Do(func() {
+-		s.dieErr = err
++		s.dieErr.Store(&err)
+ 		s.pipeR.Close()
+ 		once = true
+ 	})
+@@ -95,7 +108,7 @@ func (s *Stream) closeWithError(err error) error {
+ 		}
+ 		return s.sess.streamClosed(s.id)
+ 	} else {
+-		return s.dieErr
++		return s.loadDieErr()
+ 	}
+ }
+ 

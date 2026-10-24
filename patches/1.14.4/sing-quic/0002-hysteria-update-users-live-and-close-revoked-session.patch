@@ -1,0 +1,108 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "packet-boats[bot]"
+ <346322443+packet-boats[bot]@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 15:35:14 +0000
+Subject: [PATCH] hysteria: update users live and close revoked sessions
+
+The same for Hysteria.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+Signed-off-by: packet-boats[bot] <346322443+packet-boats[bot]@users.noreply.github.com>
+---
+ hysteria/service.go | 38 +++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 37 insertions(+), 1 deletion(-)
+
+diff --git a/hysteria/service.go b/hysteria/service.go
+index c36d055..1e8034b 100644
+--- a/hysteria/service.go
++++ b/hysteria/service.go
+@@ -56,6 +56,9 @@ type Service[U comparable] struct {
+ 	udpTimeout    time.Duration
+ 	handler       ServerHandler
+ 	quicListener  io.Closer
++	userAccess    sync.RWMutex
++	sessionAccess sync.Mutex
++	sessions      map[*serverSession[U]]struct{}
+ }
+ 
+ func NewService[U comparable](options ServiceOptions) (*Service[U], error) {
+@@ -94,15 +97,31 @@ func NewService[U comparable](options ServiceOptions) (*Service[U], error) {
+ 		handler:       options.Handler,
+ 		udpDisabled:   options.UDPDisabled,
+ 		udpTimeout:    options.UDPTimeout,
++		sessions:      make(map[*serverSession[U]]struct{}),
+ 	}, nil
+ }
+ 
++// UpdateUsers replaces the user list. It may be called while the service is
++// running: sessions whose password no longer maps to the same user are closed.
+ func (s *Service[U]) UpdateUsers(userList []U, passwordList []string) {
+ 	userMap := make(map[string]U)
+ 	for i, user := range userList {
+ 		userMap[passwordList[i]] = user
+ 	}
++	s.userAccess.Lock()
+ 	s.userMap = userMap
++	s.userAccess.Unlock()
++	s.sessionAccess.Lock()
++	var revoked []*serverSession[U]
++	for session := range s.sessions {
++		if user, loaded := userMap[session.authKey]; !loaded || user != session.authUser {
++			revoked = append(revoked, session)
++		}
++	}
++	s.sessionAccess.Unlock()
++	for _, session := range revoked {
++		session.closeWithError0(ErrorCodeAuthError, E.New("user removed"))
++	}
+ }
+ 
+ func (s *Service[U]) Start(conn net.PacketConn) error {
+@@ -154,6 +173,7 @@ type serverSession[U comparable] struct {
+ 	connDone     chan struct{}
+ 	connErr      error
+ 	authUser     U
++	authKey      string
+ 	udpAccess    sync.RWMutex
+ 	udpConnMap   map[uint32]*udpPacketConn
+ 	udpSessionID uint32
+@@ -173,7 +193,19 @@ func (s *serverSession[U]) handleConnection() {
+ 		s.closeWithError0(ErrorCodeProtocolError, E.Cause(err, "read client hello"))
+ 		return
+ 	}
++	// Register the session under the same read lock as the lookup, so an
++	// UpdateUsers that removes the user either runs first and refuses it, or
++	// runs after and closes it.
++	s.userAccess.RLock()
+ 	user, loaded := s.userMap[clientHello.Auth]
++	if loaded {
++		s.authUser = user
++		s.authKey = clientHello.Auth
++		s.sessionAccess.Lock()
++		s.sessions[s] = struct{}{}
++		s.sessionAccess.Unlock()
++	}
++	s.userAccess.RUnlock()
+ 	if !loaded {
+ 		WriteServerHello(controlStream, ServerHello{
+ 			OK:      false,
+@@ -182,6 +214,11 @@ func (s *serverSession[U]) handleConnection() {
+ 		s.closeWithError0(ErrorCodeAuthError, E.New("authentication failed, auth_str=", clientHello.Auth))
+ 		return
+ 	}
++	defer func() {
++		s.sessionAccess.Lock()
++		delete(s.sessions, s)
++		s.sessionAccess.Unlock()
++	}()
+ 	err = WriteServerHello(controlStream, ServerHello{
+ 		OK:      true,
+ 		SendBPS: s.sendBPS,
+@@ -192,7 +229,6 @@ func (s *serverSession[U]) handleConnection() {
+ 		return
+ 	}
+ 	_ = controlStream.SetDeadline(time.Time{})
+-	s.authUser = user
+ 	s.quicConn.SetCongestionControl(hyCC.NewBrutalSender(min(s.sendBPS, clientHello.RecvBPS), s.quicConn.InitialPacketSize(), s.brutalDebug, s.logger))
+ 	if !s.udpDisabled {
+ 		go s.loopMessages()

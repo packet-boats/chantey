@@ -1,0 +1,124 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "packet-boats[bot]"
+ <346322443+packet-boats[bot]@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 15:35:15 +0000
+Subject: [PATCH] service: update users live and close revoked sessions
+
+The service accepts a new user list while it runs, and closes the
+sessions of removed users.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+Signed-off-by: packet-boats[bot] <346322443+packet-boats[bot]@users.noreply.github.com>
+---
+ service.go | 57 +++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 56 insertions(+), 1 deletion(-)
+
+diff --git a/service.go b/service.go
+index c58f365..1a8bcb9 100644
+--- a/service.go
++++ b/service.go
+@@ -7,6 +7,7 @@ import (
+ 	"errors"
+ 	"net"
+ 	"os"
++	"sync"
+ 
+ 	"github.com/anytls/sing-anytls/padding"
+ 	"github.com/anytls/sing-anytls/session"
+@@ -26,6 +27,14 @@ type Service struct {
+ 	handler         N.TCPConnectionHandlerEx
+ 	fallbackHandler N.TCPConnectionHandlerEx
+ 	logger          logger.ContextLogger
++	userAccess      sync.RWMutex
++	sessionAccess   sync.Mutex
++	sessions        map[*session.Session]sessionAuth
++}
++
++type sessionAuth struct {
++	user string
++	key  [32]byte
+ }
+ 
+ type ServiceConfig struct {
+@@ -47,6 +56,7 @@ func NewService(config ServiceConfig) (*Service, error) {
+ 		fallbackHandler: config.FallbackHandler,
+ 		logger:          config.Logger,
+ 		users:           make(map[[32]byte]string),
++		sessions:        make(map[*session.Session]sessionAuth),
+ 	}
+ 
+ 	if service.handler == nil || service.logger == nil {
+@@ -64,12 +74,49 @@ func NewService(config ServiceConfig) (*Service, error) {
+ 	return service, nil
+ }
+ 
++// UpdateUsers replaces the user list. It may be called while the service is
++// running: sessions whose password no longer maps to the same user are closed,
++// since a session authenticates once and then opens streams freely.
+ func (s *Service) UpdateUsers(users []User) {
+ 	u := make(map[[32]byte]string)
+ 	for _, user := range users {
+ 		u[sha256.Sum256([]byte(user.Password))] = user.Name
+ 	}
++	s.userAccess.Lock()
+ 	s.users = u
++	s.userAccess.Unlock()
++	s.sessionAccess.Lock()
++	var revoked []*session.Session
++	for session, auth := range s.sessions {
++		if user, loaded := u[auth.key]; !loaded || user != auth.user {
++			revoked = append(revoked, session)
++		}
++	}
++	s.sessionAccess.Unlock()
++	for _, session := range revoked {
++		session.Close()
++	}
++}
++
++// addSession registers an authenticated session unless its user was removed
++// since the lookup. It holds the user read lock, so UpdateUsers either sees
++// the session and closes it, or has already removed the user.
++func (s *Service) addSession(session *session.Session, user string, key [32]byte) bool {
++	s.userAccess.RLock()
++	defer s.userAccess.RUnlock()
++	if current, loaded := s.users[key]; !loaded || current != user {
++		return false
++	}
++	s.sessionAccess.Lock()
++	s.sessions[session] = sessionAuth{user, key}
++	s.sessionAccess.Unlock()
++	return true
++}
++
++func (s *Service) removeSession(session *session.Session) {
++	s.sessionAccess.Lock()
++	delete(s.sessions, session)
++	s.sessionAccess.Unlock()
+ }
+ 
+ // NewConnection `conn` should be plaintext
+@@ -90,7 +137,10 @@ func (s *Service) NewConnection(ctx context.Context, conn net.Conn, source M.Soc
+ 	}
+ 	var passwordSha256 [32]byte
+ 	copy(passwordSha256[:], by)
+-	if user, ok := s.users[passwordSha256]; ok {
++	s.userAccess.RLock()
++	user, ok := s.users[passwordSha256]
++	s.userAccess.RUnlock()
++	if ok {
+ 		ctx = auth.ContextWithUser(ctx, user)
+ 	} else {
+ 		b.Resize(0, n)
+@@ -119,6 +169,11 @@ func (s *Service) NewConnection(ctx context.Context, conn net.Conn, source M.Soc
+ 
+ 		s.handler.NewConnectionEx(ctx, stream, source, destination, onClose)
+ 	}, &s.padding, s.logger)
++	if !s.addSession(session, user, passwordSha256) {
++		session.Close()
++		return E.New("user removed")
++	}
++	defer s.removeSession(session)
+ 	session.Run()
+ 	session.Close()
+ 	return nil
