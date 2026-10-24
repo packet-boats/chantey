@@ -89,6 +89,21 @@ rebased onto it; `build.sh` builds the newest one unless `-b` names
 another. A change to the patches or the Go release of a released base
 raises `<n>`.
 
+## New sing-box releases
+
+```sh
+./upstream.sh          # a set for sing-box's newest stable release, built and tested
+./upstream.sh 1.14.5   # a set for that release
+./upstream.sh -n       # only print the release it would prepare
+```
+
+`upstream.sh` copies the newest patch set to `patches/<version>`, pins
+`bases.txt` to the release and to the module versions its `go.mod` names,
+takes the newest patch release of the Go version the official build was
+made with, and runs `./build.sh -t -a amd64` on it. It needs jq besides
+what `build.sh` needs. When a patch does not apply or a test fails, the
+series needs rebasing by hand (see below).
+
 ## Working on a patch
 
 ```sh
