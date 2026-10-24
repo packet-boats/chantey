@@ -1,0 +1,37 @@
+# Copyright 2026 Packet Boats
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Applies the patches, runs the tests of every patched package and builds
+# chantey for linux/amd64 and linux/arm64.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: patch, test and build
+        run: ./build.sh -t
+      - name: run the amd64 binary
+        run: |
+          tar -xzf dist/chantey-*-linux-amd64.tar.gz -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP"/chantey-*-linux-amd64/chantey version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chantey
+          path: dist/
+          retention-days: 7
