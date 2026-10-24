@@ -1,0 +1,159 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "packet-boats[bot]"
+ <346322443+packet-boats[bot]@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 08:38:48 +0000
+Subject: [PATCH] Name the program chantey
+
+sing-box's licence asks that a derivative work not use its name or imply
+association with it. The command, its version line, its run messages,
+and what it reports over the Clash API, the SSM API and its User-Agent
+now say chantey.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+Signed-off-by: packet-boats[bot] <346322443+packet-boats[bot]@users.noreply.github.com>
+---
+ cmd/sing-box/cmd.go                        | 2 +-
+ cmd/sing-box/cmd_api_openconnect_auth.go   | 2 +-
+ cmd/sing-box/cmd_api_openconnect_status.go | 2 +-
+ cmd/sing-box/cmd_api_openvpn_auth.go       | 2 +-
+ cmd/sing-box/cmd_api_openvpn_status.go     | 2 +-
+ cmd/sing-box/cmd_run.go                    | 4 ++--
+ cmd/sing-box/cmd_version.go                | 2 +-
+ experimental/clashapi/server.go            | 2 +-
+ service/origin_ca/service.go               | 2 +-
+ service/ssmapi/api.go                      | 2 +-
+ 10 files changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/cmd/sing-box/cmd.go b/cmd/sing-box/cmd.go
+index e635f5c0..8cd60f02 100644
+--- a/cmd/sing-box/cmd.go
++++ b/cmd/sing-box/cmd.go
+@@ -26,7 +26,7 @@ var (
+ )
+ 
+ var mainCommand = &cobra.Command{
+-	Use:              "sing-box",
++	Use:              "chantey",
+ 	PersistentPreRun: preRun,
+ }
+ 
+diff --git a/cmd/sing-box/cmd_api_openconnect_auth.go b/cmd/sing-box/cmd_api_openconnect_auth.go
+index 12c67a5a..7c432678 100644
+--- a/cmd/sing-box/cmd_api_openconnect_auth.go
++++ b/cmd/sing-box/cmd_api_openconnect_auth.go
+@@ -29,7 +29,7 @@ var commandAPIOpenConnectAuth = &cobra.Command{
+ 	RunE: func(cmd *cobra.Command, args []string) error {
+ 		err := runAPIOpenConnectAuth()
+ 		if errors.Is(err, errAuthInterrupted) {
+-			writeAuthLine(`interrupted; the challenge is still pending — run "sing-box api openconnect auth" again, or "sing-box api openconnect cancel" to restart authentication`)
++			writeAuthLine(`interrupted; the challenge is still pending — run "chantey api openconnect auth" again, or "chantey api openconnect cancel" to restart authentication`)
+ 			os.Exit(130)
+ 		}
+ 		return wrapAuthError("openconnect", err)
+diff --git a/cmd/sing-box/cmd_api_openconnect_status.go b/cmd/sing-box/cmd_api_openconnect_status.go
+index 912c9718..ca470d9c 100644
+--- a/cmd/sing-box/cmd_api_openconnect_status.go
++++ b/cmd/sing-box/cmd_api_openconnect_status.go
+@@ -88,6 +88,6 @@ func writeOpenConnectStatusBlock(endpointStatus *daemon.OpenConnectEndpointStatu
+ 	block.flush()
+ 	if challenge != nil {
+ 		writeStderrLine("")
+-		writeStderrLine(`run "sing-box api openconnect auth" to answer`)
++		writeStderrLine(`run "chantey api openconnect auth" to answer`)
+ 	}
+ }
+diff --git a/cmd/sing-box/cmd_api_openvpn_auth.go b/cmd/sing-box/cmd_api_openvpn_auth.go
+index f9755511..599f2edd 100644
+--- a/cmd/sing-box/cmd_api_openvpn_auth.go
++++ b/cmd/sing-box/cmd_api_openvpn_auth.go
+@@ -26,7 +26,7 @@ var commandAPIOpenVPNAuth = &cobra.Command{
+ 	RunE: func(cmd *cobra.Command, args []string) error {
+ 		err := runAPIOpenVPNAuth()
+ 		if errors.Is(err, errAuthInterrupted) {
+-			writeAuthLine(`interrupted; the challenge is still pending — run "sing-box api openvpn auth" again, or "sing-box api openvpn cancel" to stop the client`)
++			writeAuthLine(`interrupted; the challenge is still pending — run "chantey api openvpn auth" again, or "chantey api openvpn cancel" to stop the client`)
+ 			os.Exit(130)
+ 		}
+ 		return wrapAuthError("openvpn", err)
+diff --git a/cmd/sing-box/cmd_api_openvpn_status.go b/cmd/sing-box/cmd_api_openvpn_status.go
+index 735aa047..fe1ee78a 100644
+--- a/cmd/sing-box/cmd_api_openvpn_status.go
++++ b/cmd/sing-box/cmd_api_openvpn_status.go
+@@ -94,6 +94,6 @@ func writeOpenVPNStatusBlock(endpointStatus *daemon.OpenVPNEndpointStatus) {
+ 	block.flush()
+ 	if challenge != nil {
+ 		writeStderrLine("")
+-		writeStderrLine(`run "sing-box api openvpn auth" to continue`)
++		writeStderrLine(`run "chantey api openvpn auth" to continue`)
+ 	}
+ }
+diff --git a/cmd/sing-box/cmd_run.go b/cmd/sing-box/cmd_run.go
+index fecd99a0..3b818fbf 100644
+--- a/cmd/sing-box/cmd_run.go
++++ b/cmd/sing-box/cmd_run.go
+@@ -209,7 +209,7 @@ func run() error {
+ 			closed()
+ 			if osSignal != syscall.SIGHUP {
+ 				if err != nil {
+-					log.Error(E.Cause(err, "sing-box did not closed properly"))
++					log.Error(E.Cause(err, "chantey did not close properly"))
+ 				}
+ 				return nil
+ 			}
+@@ -229,5 +229,5 @@ func closeMonitor(ctx context.Context) {
+ 		return
+ 	default:
+ 	}
+-	log.Fatal("sing-box did not close!")
++	log.Fatal("chantey did not close!")
+ }
+diff --git a/cmd/sing-box/cmd_version.go b/cmd/sing-box/cmd_version.go
+index ab5ada2e..9416bca9 100644
+--- a/cmd/sing-box/cmd_version.go
++++ b/cmd/sing-box/cmd_version.go
+@@ -29,7 +29,7 @@ func printVersion(cmd *cobra.Command, args []string) {
+ 		os.Stdout.WriteString(C.Version + "\n")
+ 		return
+ 	}
+-	version := "sing-box version " + C.Version + "\n\n"
++	version := "chantey version " + C.Version + "\n\n"
+ 	version += "Environment: " + runtime.Version() + " " + runtime.GOOS + "/" + runtime.GOARCH + "\n"
+ 
+ 	var tags string
+diff --git a/experimental/clashapi/server.go b/experimental/clashapi/server.go
+index a8c99af3..4dc96632 100644
+--- a/experimental/clashapi/server.go
++++ b/experimental/clashapi/server.go
+@@ -361,5 +361,5 @@ func getLogs(ctx context.Context, logFactory log.ObservableFactory) func(w http.
+ }
+ 
+ func version(w http.ResponseWriter, r *http.Request) {
+-	render.JSON(w, r, render.M{"version": "sing-box " + C.Version, "premium": true, "meta": true})
++	render.JSON(w, r, render.M{"version": "chantey " + C.Version, "premium": true, "meta": true})
+ }
+diff --git a/service/origin_ca/service.go b/service/origin_ca/service.go
+index 2eb1c827..f4311913 100644
+--- a/service/origin_ca/service.go
++++ b/service/origin_ca/service.go
+@@ -366,7 +366,7 @@ func (s *Service) requestCertificate(ctx context.Context) ([]byte, []byte, *tls.
+ 	}
+ 	request.Header.Set("Accept", "application/json")
+ 	request.Header.Set("Content-Type", "application/json")
+-	request.Header.Set("User-Agent", "sing-box/"+C.Version)
++	request.Header.Set("User-Agent", "chantey/"+C.Version)
+ 	if s.apiToken != "" {
+ 		request.Header.Set("Authorization", "Bearer "+s.apiToken)
+ 	} else {
+diff --git a/service/ssmapi/api.go b/service/ssmapi/api.go
+index 6a067c50..c01e1c17 100644
+--- a/service/ssmapi/api.go
++++ b/service/ssmapi/api.go
+@@ -45,7 +45,7 @@ func (s *APIServer) Route(r chi.Router) {
+ 
+ func (s *APIServer) getServerInfo(writer http.ResponseWriter, request *http.Request) {
+ 	render.JSON(writer, request, render.M{
+-		"server":     "sing-box " + C.Version,
++		"server":     "chantey " + C.Version,
+ 		"apiVersion": "v1",
+ 	})
+ }
